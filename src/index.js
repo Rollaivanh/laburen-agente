@@ -95,22 +95,21 @@ const manifest = {
     },
     {
       name: 'list_products',
-      description: 'Lista productos disponibles. Permite filtrar por name, color, stock y description.',
+      description: 'Lista productos disponibles filtrando por nombre, color o descripción. REGLA CRÍTICA: Si el usuario menciona un TIPO DE PRODUCTO (remera, camiseta, falda, pantalón, pantalones, etc.), SIEMPRE usa el parámetro "name" con ese término, NUNCA uses "description". El parámetro "description" solo se usa para buscar características específicas dentro de la descripción del producto, NO para buscar tipos de productos. Ejemplos: "pantalones" → {"name": "pantalones"}, "remera" → {"name": "remera"}, "camiseta" → {"name": "camiseta"}.',
       inputSchema: {
         type: 'object',
         properties: {
           name: {
             type: 'string',
-            description: 'Filtrar por nombre del producto igual que como aparece en available_products',
+            description: 'USAR ESTE PARÁMETRO cuando el usuario menciona un tipo de producto. VALORES PERMITIDOS ÚNICAMENTE: "Camisa", "Camiseta", "Chaqueta", "Falda", "Pantalon", "Sudadera". Debes usar exactamente uno de estos valores. Ejemplos: si el usuario dice "pantalones" o "pantalón" → usar "Pantalon", si dice "remera" o "camiseta" → usar "Camiseta", si dice "falda" → usar "Falda".',
           },
           color: {
             type: 'string',
-            description: 'Filtrar por color exacto del producto, los colores deben estar en masculino, ej: Negro',
+            description: 'Opcional. Color del producto en masculino (ej: "Negro", "Blanco", "Rojo"). Solo usar si el usuario especifica un color explícitamente.',
           },
-
           description: {
             type: 'string',
-            description: 'Filtrar por descripción usando búsqueda parcial (case-insensitive)',
+            description: 'NO USAR para buscar tipos de productos. Solo usar para buscar características específicas dentro de la descripción del producto (ej: "algodón", "manga larga", "estampado"). Si el usuario menciona un tipo de producto, usa "name" en su lugar.',
           },
         },
         required: [],
@@ -162,6 +161,74 @@ const manifest = {
         required: ['conversation_id'],
       },
     },
+    {
+      name: 'add_product_to_cart',
+      description: 'Agrega un producto al carrito o incrementa su cantidad si ya existe. Si el carrito no existe, lo crea automáticamente.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversation_id: {
+            type: 'string',
+            description: 'ID de la conversación asociada al carrito',
+          },
+          product_id: {
+            type: 'string',
+            description: 'ID del producto a agregar al carrito',
+          },
+          quantity: {
+            type: 'number',
+            description: 'Cantidad a agregar (default: 1). Si el producto ya existe, se suma a la cantidad existente.',
+          },
+        },
+        required: ['conversation_id', 'product_id'],
+      },
+    },
+    {
+      name: 'update_cart',
+      description: 'Actualiza productos en el carrito: modifica cantidades o elimina productos. Para eliminar un producto, establece quantity en 0.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversation_id: {
+            type: 'string',
+            description: 'ID de la conversación asociada al carrito',
+          },
+          updates: {
+            type: 'array',
+            description: 'Array de actualizaciones. Cada elemento debe tener product_id y quantity. Si quantity es 0, el producto se elimina del carrito.',
+            items: {
+              type: 'object',
+              properties: {
+                product_id: {
+                  type: 'string',
+                  description: 'ID del producto a actualizar o eliminar',
+                },
+                quantity: {
+                  type: 'number',
+                  description: 'Nueva cantidad del producto. Usar 0 para eliminar el producto del carrito.',
+                },
+              },
+              required: ['product_id', 'quantity'],
+            },
+          },
+        },
+        required: ['conversation_id', 'updates'],
+      },
+    },
+    {
+      name: 'get_cart_total',
+      description: 'Obtiene el total del carrito calculando el precio de todos los productos incluidos. Devuelve el total, los items con sus precios y cantidades.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          conversation_id: {
+            type: 'string',
+            description: 'ID de la conversación asociada al carrito',
+          },
+        },
+        required: ['conversation_id'],
+      },
+    },
   ],
 };
 
@@ -205,7 +272,22 @@ async function handleJsonRpcMethod(method, params, id, env) {
 
     case 'tools/call':
       // Ejecutar una herramienta
-      const { name, arguments: args } = params || {};
+      let { name, arguments: args } = params || {};
+
+      // Si arguments viene como string JSON, parsearlo
+      if (typeof args === 'string') {
+        try {
+          args = JSON.parse(args);
+        } catch (e) {
+          console.warn('Error al parsear arguments como JSON:', e);
+          args = {};
+        }
+      }
+
+      // Si args es null o undefined, inicializarlo como objeto vacío
+      if (!args || typeof args !== 'object') {
+        args = {};
+      }
 
       if (name === 'test_connection') {
         return jsonRpcResponse(id, {
@@ -220,11 +302,17 @@ async function handleJsonRpcMethod(method, params, id, env) {
 
       if (name === 'list_products') {
         try {
+          // Debug: Log de argumentos recibidos
+          console.log('list_products - args recibidos:', JSON.stringify(args));
+
           // Construir filtros desde los argumentos
           const filters = {};
           if (args?.name) filters.name = args.name;
           if (args?.color) filters.color = args.color;
           if (args?.description) filters.description = args.description;
+
+          // Debug: Log de filtros construidos
+          console.log('list_products - filtros construidos:', JSON.stringify(filters));
 
           // Obtener productos desde Supabase
           const products = await ProductService.list(env, filters);
@@ -488,6 +576,244 @@ async function handleJsonRpcMethod(method, params, id, env) {
         }
       }
 
+      if (name === 'add_product_to_cart') {
+        try {
+          const conversationId = args?.conversation_id;
+          const productId = args?.product_id;
+          const quantity = args?.quantity || 1;
+
+          if (!conversationId) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'conversation_id es requerido',
+              },
+            });
+          }
+
+          if (!productId) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'product_id es requerido',
+              },
+            });
+          }
+
+          if (quantity <= 0) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'quantity debe ser mayor a 0',
+              },
+            });
+          }
+
+          // Agregar producto al carrito
+          const cart = await CartService.addProductToCart(env, conversationId, productId, quantity);
+
+          if (!cart) {
+            return jsonRpcResponse(id, null, {
+              code: -32603,
+              message: 'Supabase no está configurado',
+              data: {
+                error: 'Las variables de entorno SUPABASE_URL y SUPABASE_KEY no están configuradas',
+              },
+            });
+          }
+
+          return jsonRpcResponse(id, {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    cart: cart,
+                    message: `Producto ${productId} agregado al carrito (cantidad: ${quantity})`,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          });
+        } catch (error) {
+          const errorMessage = error?.message || String(error);
+          const errorDetails = error?.details || error?.hint || null;
+          const errorCode = error?.code || null;
+
+          return jsonRpcResponse(id, null, {
+            code: -32603,
+            message: 'Error al agregar producto al carrito',
+            data: {
+              error: errorMessage,
+              details: errorDetails,
+              code: errorCode,
+              fullError: process.env.NODE_ENV === 'development' ? String(error) : undefined,
+            },
+          });
+        }
+      }
+
+      if (name === 'update_cart') {
+        try {
+          const conversationId = args?.conversation_id;
+          const updates = args?.updates;
+
+          if (!conversationId) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'conversation_id es requerido',
+              },
+            });
+          }
+
+          if (!updates || !Array.isArray(updates) || updates.length === 0) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'updates debe ser un array no vacío con objetos {product_id, quantity}',
+              },
+            });
+          }
+
+          // Validar formato de cada actualización
+          for (const update of updates) {
+            if (!update.product_id) {
+              return jsonRpcResponse(id, null, {
+                code: -32602,
+                message: 'Invalid params',
+                data: {
+                  error: 'Cada actualización debe tener product_id',
+                },
+              });
+            }
+            if (update.quantity === undefined || update.quantity === null) {
+              return jsonRpcResponse(id, null, {
+                code: -32602,
+                message: 'Invalid params',
+                data: {
+                  error: 'Cada actualización debe tener quantity (usar 0 para eliminar)',
+                },
+              });
+            }
+            if (update.quantity < 0) {
+              return jsonRpcResponse(id, null, {
+                code: -32602,
+                message: 'Invalid params',
+                data: {
+                  error: 'quantity no puede ser negativo',
+                },
+              });
+            }
+          }
+
+          // Actualizar el carrito
+          const cart = await CartService.updateCart(env, conversationId, updates);
+
+          if (!cart) {
+            return jsonRpcResponse(id, null, {
+              code: -32603,
+              message: 'Supabase no está configurado',
+              data: {
+                error: 'Las variables de entorno SUPABASE_URL y SUPABASE_KEY no están configuradas',
+              },
+            });
+          }
+
+          return jsonRpcResponse(id, {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    cart: cart,
+                    message: `Carrito actualizado con ${updates.length} cambio(s)`,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          });
+        } catch (error) {
+          const errorMessage = error?.message || String(error);
+          const errorDetails = error?.details || error?.hint || null;
+          const errorCode = error?.code || null;
+
+          return jsonRpcResponse(id, null, {
+            code: -32603,
+            message: 'Error al actualizar carrito',
+            data: {
+              error: errorMessage,
+              details: errorDetails,
+              code: errorCode,
+              fullError: process.env.NODE_ENV === 'development' ? String(error) : undefined,
+            },
+          });
+        }
+      }
+
+      if (name === 'get_cart_total') {
+        try {
+          const conversationId = args?.conversation_id;
+
+          if (!conversationId) {
+            return jsonRpcResponse(id, null, {
+              code: -32602,
+              message: 'Invalid params',
+              data: {
+                error: 'conversation_id es requerido',
+              },
+            });
+          }
+
+          // Calcular total del carrito
+          const cartTotal = await CartService.getCartTotal(env, conversationId);
+
+          if (cartTotal === null) {
+            return jsonRpcResponse(id, null, {
+              code: -32603,
+              message: 'Supabase no está configurado',
+              data: {
+                error: 'Las variables de entorno SUPABASE_URL y SUPABASE_KEY no están configuradas',
+              },
+            });
+          }
+
+          // Devolver solo el total en formato numérico
+          return jsonRpcResponse(id, {
+            content: [
+              {
+                type: 'text',
+                text: String(cartTotal),
+              },
+            ],
+          });
+        } catch (error) {
+          const errorMessage = error?.message || String(error);
+          const errorDetails = error?.details || error?.hint || null;
+          const errorCode = error?.code || null;
+
+          return jsonRpcResponse(id, null, {
+            code: -32603,
+            message: 'Error al calcular total del carrito',
+            data: {
+              error: errorMessage,
+              details: errorDetails,
+              code: errorCode,
+              fullError: process.env.NODE_ENV === 'development' ? String(error) : undefined,
+            },
+          });
+        }
+      }
+
       // Herramienta no encontrada
       return jsonRpcResponse(id, null, {
         code: -32601,
@@ -541,8 +867,18 @@ export default {
         if (request.method === 'POST') {
           let body;
           try {
+            const bodyText = await request.clone().text();
+            console.log('=== REQUEST RECIBIDO DEL AGENTE ===');
+            console.log('URL:', request.url);
+            console.log('Method:', request.method);
+            console.log('Headers:', Object.fromEntries(request.headers.entries()));
+            console.log('Body (raw):', bodyText);
+
             body = await request.json();
+            console.log('Body (parsed):', JSON.stringify(body, null, 2));
+            console.log('===================================');
           } catch (e) {
+            console.error('Error al parsear body:', e);
             return jsonRpcResponse(null, null, {
               code: -32700,
               message: 'Parse error',
@@ -563,6 +899,9 @@ export default {
               message: 'Invalid Request: method is required',
             });
           }
+
+          console.log('Método JSON-RPC:', body.method);
+          console.log('Params recibidos:', JSON.stringify(body.params, null, 2));
 
           // Procesar método JSON-RPC
           return await handleJsonRpcMethod(body.method, body.params, body.id, env);

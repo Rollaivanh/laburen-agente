@@ -8,7 +8,7 @@ workers_dev = true
 # Observabilidad - Logs
 [observability]
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
 
 # Variables de entorno configuradas como secrets
