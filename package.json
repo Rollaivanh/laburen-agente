@@ -1,0 +1,19 @@
+{
+  "name": "laburen-mcp-basic",
+  "version": "1.0.0",
+  "description": "MCP básico para Laburen Challenge - Cloudflare Workers",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "keywords": ["mcp", "cloudflare", "workers"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

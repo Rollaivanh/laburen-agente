@@ -1,0 +1,17 @@
+name = "laburen-mcp-basic"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Habilitar despliegue en workers.dev subdomain
+workers_dev = true
+
+# Observabilidad - Logs
+[observability]
+[observability.logs]
+enabled = false
+invocation_logs = true
+
+# Variables de entorno configuradas como secrets
+# Para configurar: wrangler secret put SUPABASE_URL
+# Para configurar: wrangler secret put SUPABASE_KEY
+# Para listar: wrangler secret list
